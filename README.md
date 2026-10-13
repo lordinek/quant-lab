@@ -1,56 +1,52 @@
 # quant-lab
 
-A research and validation framework for intraday trading models. It covers data ingestion, structure-based signal detection, a backtest engine that respects confirmation lag, a **multi-stage validation suite**, a prop-firm challenge simulator, live-trading protections and a trade journal.
+These are the scripts I run on a trading strategy before I believe its backtest. Most of my ideas die here.
 
-The included strategy (`strategy/setup.py`, an ICT-style *liquidity sweep → CHoCH → inverse FVG* model) is kept on purpose as a **case study: the validation suite killed it.** Its early backtest looked profitable because of a stop placed on the wrong side of entry. After that bug was fixed, it failed on every instrument it was tested on. My production models are private and are not in this repo.
+The strategy in `strategy/setup.py` is one of those. It's an ICT-style setup: a liquidity sweep, then a change of character, then entry on an inverted fair value gap. The first backtest looked very good. It turned out the stop was sometimes placed on the wrong side of the entry, and that bug was producing the good results. After that was fixed, it lost money on every market I tried. I kept it in the repo because it's a real example of what these checks are for. The strategies I actually run are not here.
 
-> Code comments and docstrings are in Turkish. They explain *why* each decision was made, not just what the code does.
+Comments and docstrings are in Turkish, and most of them explain why something is done the way it is.
 
-## Why this exists
+## The checks
 
-Most retail backtests lie by accident: look-ahead bias, a single lucky parameter, costs set to zero, or one market that happened to trend. This repo turns each of those failure modes into a script that has to pass before a model sees real money.
-
-## Validation suite (`backtest/`)
-
-| Check | Question it answers |
+| Script | What it answers |
 | --- | --- |
-| `lookahead_check.py` | Does any signal use a bar it could not have known yet? It recomputes on truncated data and diffs the results. |
-| `recursive_check.py` | Do indicators change when more history is prepended? |
-| `random_control.py` | Does the model beat random entries with the same stop/target geometry? |
-| `robustness.py` | Does it work across a plateau of parameters, or only on one lucky setting? |
-| `out_of_sample.py` | Train 2021–23, test 2024–26. Does it hold on unseen data? |
-| `windows.py` | Rolling-window stability: what share of windows is profitable, and how bad is the worst one? |
-| `layer_ablation.py` | Which layer of a multi-layer signal chain actually adds value? |
-| `hour_filter_test.py` | Is a time-of-day filter real, or curve-fitted? |
-| `multi_market.py` | Is the edge instrument-specific or general? |
-| `cost_sensitivity.py` | At what spread/slippage does the edge disappear? |
+| `lookahead_check.py` | Does any signal use a bar it couldn't have seen yet? Reruns on cut-off data and compares. |
+| `recursive_check.py` | Do indicator values change when more history is added in front? |
+| `random_control.py` | Does the strategy beat random entries with the same stop and target? |
+| `robustness.py` | Does it still work when the parameters move a bit, or only at one exact setting? |
+| `out_of_sample.py` | Fit on 2021–2023, then look at 2024–2026. |
+| `windows.py` | Rolling windows: how many are profitable, and how bad is the worst? |
+| `layer_ablation.py` | Remove one layer of the signal at a time. Which ones actually matter? |
+| `hour_filter_test.py` | Is a time-of-day filter real or curve-fitted? |
+| `multi_market.py` | Does it work on other instruments too? |
+| `cost_sensitivity.py` | How much spread and slippage before the edge is gone? |
 
-## Other components
+## The rest
 
-- **`signals/`**: swing points, BOS/CHoCH market structure, fair value gaps and their inversion lifecycle, liquidity pools and sweeps, session/killzone and macro-news windows. Every event tracks *when it happened* separately from *when it became known*.
-- **`backtest/evaluate.py`**: bar-by-bar trade resolution with costs, max holding time and news-window exits. Results are reported in R multiples.
-- **`backtest/portfolio.py`**: converts R-results into account equity with position sizing and concurrent-position limits.
-- **`backtest/prop_eval.py`**: prop-firm challenge simulator (FTMO / Topstep / Apex-style rules, including daily loss, max/trailing drawdown, profit target and funded-stage scaling). It uses conservative assumptions that always favor the firm.
-- **`strategy/protections.py`**: live circuit breakers, such as a pause after N consecutive stops or a daily loss cap, with thresholds tuned on train and verified on test (`protection_scan.py`).
-- **`journal/`**: CLI journal for manual trades. Each entry is stored next to the bot's view at that exact moment, so discretionary mistakes become measurable.
-- **`data/`**: free 1-minute data sources (Dukascopy ticks, HistData, Binance klines) with resampling and caching.
+`signals/` finds swing points, breaks of structure, fair value gaps, liquidity sweeps, trading sessions and news windows. Each event records the bar where it happened and the bar where it could first be known, because mixing those two up is the usual way look-ahead bias gets in.
 
-## Quick start
+`backtest/evaluate.py` walks trades bar by bar with costs, a max holding time and optional exits before news. Results are in R (multiples of risk). `portfolio.py` turns R into an account balance.
+
+`backtest/prop_eval.py` simulates prop-firm challenges with FTMO, Topstep and Apex style rules: daily loss limit, max or trailing drawdown, profit target and the funded stage after it. When something is unclear it assumes the rule that is worse for me.
+
+`strategy/protections.py` holds the live stop rules: pause after N stops in a row, after too many stops in 24 hours, or after a drawdown limit. `protection_scan.py` picks the thresholds on training data and checks them on test data.
+
+`journal/` is a small CLI for logging manual trades. Each entry also saves what the bot thought at that moment.
+
+`data/` downloads free 1-minute data from Dukascopy, HistData and Binance.
+
+## Running
 
 ```bash
 pip install -r requirements.txt
-pytest                              # 100 tests
-python -m backtest.run              # downloads NAS100 1m data, runs the case-study model
-python -m backtest.lookahead_check
+pytest                          # 100 tests
+python -m backtest.run          # downloads NAS100 1m data and runs the example strategy
 python -m backtest.random_control
 ```
 
-## Lessons baked into the code
+## Two mistakes that shaped this
 
-- A stop on the wrong side of entry turned a losing model into a "winning" one. Setups whose stop lands on the wrong side are now filtered out in `find_setups`, and a gap-based stop mode makes the bug structurally impossible.
-- Time windows are defined in **hours**, not bars. A 120-bar window means 10 h on 5m data but 30 h on 15m data, and that silently changed the strategy whenever the timeframe changed.
-- When a dashboard showed great multi-market numbers, the cause was a stale data source still pointing at the retired model. Always verify where a number comes from.
+- Time windows used to be counted in bars. 120 bars is 10 hours on 5-minute data and 30 hours on 15-minute data, so changing the timeframe quietly changed the strategy. They're in hours now.
+- My dashboard once showed great multi-market numbers that were really coming from this dead strategy, through a stale data source. Now I check where a number comes from before I trust it.
 
-## License
-
-MIT. Educational/research use; nothing here is financial advice.
+MIT license. Not financial advice.
